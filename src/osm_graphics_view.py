@@ -1,9 +1,6 @@
 import re
-import sys
-import redis
 import random as rnd
 
-from PySide6.QtWidgets import QApplication
 from functools import partial
 from math import pow
 from PySide6.QtCore import QUrl, QVariantAnimation
@@ -14,12 +11,10 @@ from PySide6.QtWidgets import (
     QGraphicsPixmapItem,
 )
 from PySide6.QtNetwork import (
-    QNetworkAccessManager,
     QNetworkRequest,
     QNetworkReply,
 )
-
-redis_connection = redis.Redis(host="localhost", port=6379, db=0)
+from network_access_manager_pool import NetworkAccessManagerPool
 
 
 def check_and_extract_numbers(filename):
@@ -38,24 +33,8 @@ def check_and_extract_numbers(filename):
         return False, []
 
 
-class NetworkAccessManagerPool:
-
-    def __init__(self, parent, manager_count=1):
-        self.parent = parent
-        self.manager_count = manager_count
-        self.network_manager_list = list()
-
-        for _ in range(manager_count):
-            network_manager = QNetworkAccessManager(self.parent)
-            network_manager.setTransferTimeout(5000)
-            self.network_manager_list.append(network_manager)
-
-    def getNetworkManager(self):
-        return rnd.choice(self.network_manager_list)
-
-
 class OSMGraphicsView(QGraphicsView):
-    def __init__(self, zoom=2, parent=None):
+    def __init__(self, redis_cache, zoom=2, parent=None):
         super().__init__(parent)
 
         self.setRenderHint(QPainter.Antialiasing)
@@ -69,6 +48,10 @@ class OSMGraphicsView(QGraphicsView):
         self.setViewportUpdateMode(QGraphicsView.SmartViewportUpdate)
         self.setCacheMode(QGraphicsView.CacheBackground)
 
+        self.setWindowTitle("OpenStreetMap Viewer")
+        self.resize(800, 600)
+
+        self.redis_cache = redis_cache
         self.tile_size = 256  # The size of one tile in pixels
         self.zoom = zoom  # Current zoom level
         self.tiles = {}  # Loaded tiles: key (zoom, x, y)
@@ -93,11 +76,11 @@ class OSMGraphicsView(QGraphicsView):
     def loadCache(self):
         self.cache = dict()
 
-        for key in redis_connection.keys():
+        for key in self.redis_cache.keys():
             tile_name = key.decode("utf-8")
             is_valid, numbers = check_and_extract_numbers(tile_name)
             if is_valid:
-                data = redis_connection.get(tile_name)
+                data = self.redis_cache.get(tile_name)
                 self.cache[tuple(numbers)] = data
 
                 print(f"The tile {tuple(numbers)} is loaded into cache ")
@@ -117,6 +100,7 @@ class OSMGraphicsView(QGraphicsView):
         x_max = int(rect.right() // self.tile_size) + 1
         y_min = int(rect.top() // self.tile_size)
         y_max = int(rect.bottom() // self.tile_size) + 1
+
         max_index = 2**self.zoom - 1
 
         for x in range(x_min, x_max + 1):
@@ -133,8 +117,8 @@ class OSMGraphicsView(QGraphicsView):
         """Generates a tile URL and starts asynchronous loading"""
 
         tile_name = f"{x}_{y}_{z}_tile"
-        if redis_connection.exists(tile_name):
-            data = redis_connection.get(tile_name)
+        if self.redis_cache.exists(tile_name):
+            data = self.redis_cache.get(tile_name)
             pixmap = QPixmap()
             pixmap.loadFromData(data)
             item = QGraphicsPixmapItem(pixmap)
@@ -148,11 +132,9 @@ class OSMGraphicsView(QGraphicsView):
 
         url = rnd.choice(
             [
-                # f"https://tile.openstreetmap.org/{z}/{x}/{y}.png",
                 f"https://a.tile.openstreetmap.org/{z}/{x}/{y}.png",
                 f"https://b.tile.openstreetmap.org/{z}/{x}/{y}.png",
                 f"https://c.tile.openstreetmap.org/{z}/{x}/{y}.png",
-                # f"https://tile.openstreetmap.de/{z}/{x}/{y}.png",
             ]
         )
 
@@ -189,7 +171,7 @@ class OSMGraphicsView(QGraphicsView):
         reply.deleteLater()
 
         tile_name = f"{x}_{y}_{z}_tile"
-        redis_connection.set(tile_name, bytes(data))
+        self.redis_cache.set(tile_name, bytes(data))
 
     def clearOldTilesGroup(self):
         """Removes an animated group of old tiles after the animation is complete"""
@@ -267,12 +249,3 @@ class OSMGraphicsView(QGraphicsView):
     def mouseReleaseEvent(self, event):
         super().mouseReleaseEvent(event)
         self.updateTiles()
-
-
-if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    view = OSMGraphicsView(zoom=2)
-    view.setWindowTitle("OpenStreetMap Viewer")
-    view.resize(800, 600)
-    view.show()
-    sys.exit(app.exec())
