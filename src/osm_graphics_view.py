@@ -2,7 +2,7 @@ import re
 import random as rnd
 
 from functools import partial
-from math import pow
+import math
 from PySide6.QtCore import QUrl, QVariantAnimation
 from PySide6.QtGui import QPainter, QPixmap
 from PySide6.QtWidgets import (
@@ -30,11 +30,11 @@ def check_and_extract_numbers(filename):
         return True, [int(v) for v in numbers]
     else:
         # If it doesn't match, return False and an empty list.
-        return False, []
+        return False, list()
 
 
 class OSMGraphicsView(QGraphicsView):
-    def __init__(self, redis_cache, zoom=2, parent=None):
+    def __init__(self, zoom=2, parent=None):
         super().__init__(parent)
 
         self.setRenderHint(QPainter.Antialiasing)
@@ -51,7 +51,6 @@ class OSMGraphicsView(QGraphicsView):
         self.setWindowTitle("OpenStreetMap Viewer")
         self.resize(800, 600)
 
-        self.redis_cache = redis_cache
         self.tile_size = 256  # The size of one tile in pixels
         self.zoom = zoom  # Current zoom level
         self.tiles = {}  # Loaded tiles: key (zoom, x, y)
@@ -73,19 +72,10 @@ class OSMGraphicsView(QGraphicsView):
         # Initial loading of tiles
         self.updateTiles()
 
-    def loadCache(self):
-        self.cache = dict()
-
-        for key in self.redis_cache.keys():
-            tile_name = key.decode("utf-8")
-            is_valid, numbers = check_and_extract_numbers(tile_name)
-            if is_valid:
-                data = self.redis_cache.get(tile_name)
-                self.cache[tuple(numbers)] = data
-
-                print(f"The tile {tuple(numbers)} is loaded into cache ")
-            else:
-                print(f"Can't open load tile: {tile_name}")
+    def showEvent(self, event):
+        super().showEvent(event)
+        # Код, который выполнится после первой загрузки виджета
+        print("Виджет впервые отображён")
 
     def updateSceneRect(self):
         """Updates the scene dimensions depending on the zoom level"""
@@ -117,21 +107,12 @@ class OSMGraphicsView(QGraphicsView):
         """Generates a tile URL and starts asynchronous loading"""
 
         tile_name = f"{x}_{y}_{z}_tile"
-        if self.redis_cache.exists(tile_name):
-            data = self.redis_cache.get(tile_name)
-            pixmap = QPixmap()
-            pixmap.loadFromData(data)
-            item = QGraphicsPixmapItem(pixmap)
-            # We place the tile according to its coordinates for a given zoom
-            item.setPos(x * self.tile_size, y * self.tile_size)
-            # New tiles are drawn on top of the animated layer
-            item.setZValue(1)
-            self.scene.addItem(item)
-            self.tiles[(z, x, y)] = item
-            return
+
+        print(f"Load tile {tile_name} from OSM")
 
         url = rnd.choice(
             [
+                f"https://tile.openstreetmap.org/{z}/{x}/{y}.png",
                 f"https://a.tile.openstreetmap.org/{z}/{x}/{y}.png",
                 f"https://b.tile.openstreetmap.org/{z}/{x}/{y}.png",
                 f"https://c.tile.openstreetmap.org/{z}/{x}/{y}.png",
@@ -170,9 +151,6 @@ class OSMGraphicsView(QGraphicsView):
         self.tiles[(z, x, y)] = item
         reply.deleteLater()
 
-        tile_name = f"{x}_{y}_{z}_tile"
-        self.redis_cache.set(tile_name, bytes(data))
-
     def clearOldTilesGroup(self):
         """Removes an animated group of old tiles after the animation is complete"""
         if self.old_tiles_group:
@@ -209,7 +187,7 @@ class OSMGraphicsView(QGraphicsView):
             self.clearOldTilesGroup()
 
         # Scaling factor (eg 2 to increase by 1 level)
-        factor = pow(2, new_zoom - old_zoom)
+        factor = math.pow(2, new_zoom - old_zoom)
         cursor_scene_pos = self.mapToScene(event.position().toPoint())
 
         # Grouping current tiles for animation
