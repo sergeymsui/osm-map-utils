@@ -33,142 +33,132 @@ def check_and_extract_numbers(filename):
         return False, list()
 
 
+from functools import partial
+from PySide6.QtCore import QUrl, QPropertyAnimation, QParallelAnimationGroup, QRectF
+from PySide6.QtGui import QPixmap, QPainter
+from PySide6.QtNetwork import QNetworkRequest, QNetworkReply
+from PySide6.QtWidgets import (
+    QGraphicsView,
+    QGraphicsScene,
+    QGraphicsPixmapItem,
+    QGraphicsOpacityEffect,
+)
+
+
 class OSMGraphicsView(QGraphicsView):
     def __init__(self, zoom=2, parent=None):
         super().__init__(parent)
 
+        # Настройки рендеринга
         self.setRenderHint(QPainter.Antialiasing)
         self.setRenderHint(QPainter.SmoothPixmapTransform)
         self.setDragMode(QGraphicsView.ScrollHandDrag)
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.AnchorUnderMouse)
         self.setViewportUpdateMode(QGraphicsView.FullViewportUpdate)
-        self.setOptimizationFlag(QGraphicsView.DontAdjustForAntialiasing, True)
-        self.setOptimizationFlag(QGraphicsView.DontSavePainterState, True)
-        self.setViewportUpdateMode(QGraphicsView.SmartViewportUpdate)
-        self.setCacheMode(QGraphicsView.CacheBackground)
+        self.setCacheMode(QGraphicsView.CacheNone)
 
-        self.setWindowTitle("OpenStreetMap Viewer")
-        self.resize(800, 600)
-
-        self.tile_size = 256  # The size of one tile in pixels
-        self.zoom = zoom  # Current zoom level
-        self.tiles = {}  # Loaded tiles: key (zoom, x, y)
-        self.old_tiles_group = None  # Group for scaling animation
-        self._zoom_anim = None  # Link to zoom animation
+        self.tile_size = 256  # Размер одного тайла в пикселях
+        self.zoom = zoom  # Текущий уровень зума
+        self.tiles = {}  # Загруженные тайлы: ключ (zoom, x, y, world_offset)
+        self._fade_anim_group = None  # Ссылка на группу анимаций fade-out
 
         self.scene = QGraphicsScene(self)
         self.setScene(self.scene)
         self.updateSceneRect()
 
-        self.network_manager_pool = NetworkAccessManagerPool(self, 5)
+        # Предполагается, что NetworkAccessManagerPool определён
+        self.network_manager_pool = NetworkAccessManagerPool(self, 10)
 
-        # Rendering settings
-        self.setRenderHint(QPainter.Antialiasing)
-        self.setDragMode(QGraphicsView.ScrollHandDrag)
-        self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
-        self.setResizeAnchor(QGraphicsView.AnchorUnderMouse)
-
-        # Initial loading of tiles
+        # Начальная загрузка тайлов
         self.updateTiles()
 
-    def showEvent(self, event):
-        super().showEvent(event)
-        # Код, который выполнится после первой загрузки виджета
-        print("Виджет впервые отображён")
-
     def updateSceneRect(self):
-        """Updates the scene dimensions depending on the zoom level"""
-        size = self.tile_size * (2**self.zoom)
-        self.scene.setSceneRect(0, 0, size, size)
+        """
+        Обновление размеров сцены с горизонтальным повторением.
+        Задаем ширину сцены в 3 раза больше базовой ширины карты,
+        чтобы при прокрутке за левую или правую границу карта повторялась.
+        """
+
+        world_width = self.tile_size * (2**self.zoom)
+        self.scene.setSceneRect(0, 0, world_width, world_width)
 
     def updateTiles(self):
-        """Determines which tiles fall within the visible area and starts loading them"""
+        """
+        Определяем, какие тайлы должны отображаться с учётом горизонтального оборачивания.
+        Вычисляем область видимой части сцены и для каждой координаты x, y
+        рассчитываем обёрнутые координаты с помощью x % n_tiles и world_offset = x - (x % n_tiles).
+        """
         rect = self.mapToScene(self.viewport().rect()).boundingRect()
-
         x_min = int(rect.left() // self.tile_size)
         x_max = int(rect.right() // self.tile_size) + 1
         y_min = int(rect.top() // self.tile_size)
         y_max = int(rect.bottom() // self.tile_size) + 1
-
-        max_index = 2**self.zoom - 1
+        n_tiles = 2**self.zoom
 
         for x in range(x_min, x_max + 1):
-            if x < 0 or x > max_index:
-                continue
+            wrapped_x = x % n_tiles
+            world_offset = x - wrapped_x
             for y in range(y_min, y_max + 1):
-                if y < 0 or y > max_index:
-                    continue
-                key = (self.zoom, x, y)
+                if y < 0 or y >= n_tiles:
+                    continue  # Вертикальное оборачивание не требуется
+                key = (self.zoom, wrapped_x, y, world_offset)
                 if key not in self.tiles:
-                    self.loadTile(x, y, self.zoom)
+                    self.loadTile(wrapped_x, y, self.zoom, world_offset)
 
-    def loadTile(self, x, y, z):
-        """Generates a tile URL and starts asynchronous loading"""
-
-        tile_name = f"{x}_{y}_{z}_tile"
-
-        print(f"Load tile {tile_name} from OSM")
-
-        url = rnd.choice(
-            [
-                f"https://tile.openstreetmap.org/{z}/{x}/{y}.png",
-                f"https://a.tile.openstreetmap.org/{z}/{x}/{y}.png",
-                f"https://b.tile.openstreetmap.org/{z}/{x}/{y}.png",
-                f"https://c.tile.openstreetmap.org/{z}/{x}/{y}.png",
-            ]
+    def loadTile(self, x, y, z, world_offset=0):
+        """
+        Формирование URL и запуск асинхронной загрузки тайла с учётом смещения.
+        """
+        url = f"http://localhost:8080/{z}/{x}/{y}.png"
+        request = QNetworkRequest(QUrl(url))
+        reply = self.network_manager_pool.getNetworkManager().get(request)
+        reply.finished.connect(
+            partial(self.handleTileReply, reply, x, y, z, world_offset)
         )
 
-        request = QNetworkRequest(QUrl(url))
-        # Set the correct User-Agent according to OSM policy
-        request.setRawHeader(b"User-Agent", b"OSM-Viewer/1.0 (contact@example.com)")
-        reply = self.network_manager_pool.getNetworkManager().get(request)
-        reply.finished.connect(partial(self.handleTileReply, reply, x, y, z))
-
-    def handleTileReply(self, reply, x, y, z):
-        """Processes the response and adds the tile to the scene"""
+    def handleTileReply(self, reply, x, y, z, world_offset):
+        """
+        Обработка ответа и добавление тайла на сцену.
+        Если уровень зума уже изменился, ответ игнорируется.
+        """
+        if z != self.zoom:
+            reply.deleteLater()
+            return
 
         err = reply.error()
         if err != QNetworkReply.NetworkError.NoError:
-            print(f"Error {err} tile loading {z}/{x}/{y}: {reply.errorString()}")
+            print(
+                f"Error: {err} Ошибка загрузки тайла {z}/{x}/{y}: {reply.errorString()}"
+            )
             reply.deleteLater()
             return
 
         data = reply.readAll()
         pixmap = QPixmap()
         pixmap.loadFromData(data)
-
         if pixmap.isNull():
+            print(f"Не могу загрузить тайл ({z}/{x}/{y})")
             reply.deleteLater()
             return
 
         item = QGraphicsPixmapItem(pixmap)
-        # We place the tile according to its coordinates for a given zoom
-        item.setPos(x * self.tile_size, y * self.tile_size)
-        # New tiles are drawn on top of the animated layer
+        # Позиционирование с учетом горизонтального оборачивания:
+        # (x + world_offset) учитывает повторения карты слева и справа.
+        item.setPos((x + world_offset) * self.tile_size, y * self.tile_size)
         item.setZValue(1)
         self.scene.addItem(item)
-        self.tiles[(z, x, y)] = item
+        self.tiles[(z, x, y, world_offset)] = item
+
         reply.deleteLater()
-
-    def clearOldTilesGroup(self):
-        """Removes an animated group of old tiles after the animation is complete"""
-        if self.old_tiles_group:
-            self.scene.removeItem(self.old_tiles_group)
-            self.old_tiles_group = None
-        self._zoom_anim = None
-
-    def onZoomAnimValueChanged(self, value):
-        """Slot that updates the group scale during animation"""
-        if self.old_tiles_group:
-            self.old_tiles_group.setScale(value)
 
     def wheelEvent(self, event):
         """
-        When scrolling the mouse wheel, smooth scaling is performed
-        Current tiles are grouped and animated, and new ones are loaded in parallel
+        При изменении зума:
+          - Старые тайлы сохраняются для плавного исчезновения (fade-out).
+          - Вычисляется новый уровень зума, обновляются размеры сцены и центр.
+          - После загрузки новых тайлов для нового зума, старые плавно исчезают.
         """
-
         delta = event.angleDelta().y()
         old_zoom = self.zoom
         if delta > 0:
@@ -178,50 +168,69 @@ class OSMGraphicsView(QGraphicsView):
         if new_zoom == old_zoom:
             return
 
-        # If the zoom animation is already running, we finish it
-        if (
-            self._zoom_anim is not None
-            and self._zoom_anim.state() == QVariantAnimation.Running
-        ):
-            self._zoom_anim.stop()
-            self.clearOldTilesGroup()
+        # Сохраняем старые тайлы и очищаем словарь для новых
+        old_items = list(self.tiles.values())
+        self.tiles.clear()
 
-        # Scaling factor (eg 2 to increase by 1 level)
-        factor = math.pow(2, new_zoom - old_zoom)
+        # Вычисляем новую позицию центра
         cursor_scene_pos = self.mapToScene(event.position().toPoint())
+        factor = pow(2, new_zoom - old_zoom)
+        new_center = cursor_scene_pos * factor
 
-        # Grouping current tiles for animation
-        if self.tiles:
-            items = list(self.tiles.values())
-            self.old_tiles_group = self.scene.createItemGroup(items)
-            self.old_tiles_group.setZValue(0)
-            origin = self.old_tiles_group.mapFromScene(cursor_scene_pos)
-            self.old_tiles_group.setTransformOriginPoint(origin)
-
-            # Using QVariantAnimation for Smooth Scaling
-            self._zoom_anim = QVariantAnimation(self)
-            self._zoom_anim.setDuration(300)  # animation duration in ms
-            self._zoom_anim.setStartValue(1.0)
-            self._zoom_anim.setEndValue(factor)
-            self._zoom_anim.valueChanged.connect(self.onZoomAnimValueChanged)
-            self._zoom_anim.finished.connect(self.clearOldTilesGroup)
-            self._zoom_anim.start()
-
-        # Update zoom and scene sizes
         self.zoom = new_zoom
         self.updateSceneRect()
-        new_center = cursor_scene_pos * factor
         self.centerOn(new_center)
-        # Clear old tiles; new ones will be loaded for the new zoom
-        self.tiles.clear()
         self.updateTiles()
+
+        # Анимация fade-out для старых тайлов
+        anim_group = QParallelAnimationGroup(self)
+        for item in old_items:
+            effect = QGraphicsOpacityEffect()
+            item.setGraphicsEffect(effect)
+            anim = QPropertyAnimation(effect, b"opacity")
+            anim.setDuration(300)
+            anim.setStartValue(1.0)
+            anim.setEndValue(0.0)
+            anim_group.addAnimation(anim)
+        # По окончании группы анимаций удаляем старые тайлы
+        anim_group.finished.connect(lambda: self.cleanupOldTiles(old_items))
+        anim_group.start()
+        self._fade_anim_group = (
+            anim_group  # Сохраняем ссылку, чтобы группа не была уничтожена
+        )
+
+    def cleanupOldTiles(self, items):
+        for item in items:
+            self.scene.removeItem(item)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self.updateTiles()
 
+    def isNearMapBoundary(self, margin=50):
+        # Получаем видимую область в координатах сцены
+        visibleRect = self.mapToScene(self.viewport().rect()).boundingRect()
+        # Получаем границы сцены
+        sceneRect = self.scene.sceneRect()
+
+        nearLeft = visibleRect.left() <= sceneRect.left() + margin
+        nearRight = visibleRect.right() >= sceneRect.right() - margin
+        nearTop = visibleRect.top() <= sceneRect.top() + margin
+        nearBottom = visibleRect.bottom() >= sceneRect.bottom() - margin
+
+        return nearLeft, nearRight, nearTop, nearBottom
+
     def mouseMoveEvent(self, event):
         super().mouseMoveEvent(event)
+
+        nearLeft, nearRight, nearTop, nearBottom = self.isNearMapBoundary()
+
+        world_width = self.tile_size * (2**self.zoom)
+        # self.scene.setSceneRect(0, 0, world_width, world_width)
+
+        # sceneRect = self.scene.sceneRect()
+        # sceneRect.width()
+
         self.updateTiles()
 
     def mouseReleaseEvent(self, event):
