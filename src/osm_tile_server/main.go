@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"image/png"
 	"log"
 	"math/rand"
 	"net/http"
@@ -15,6 +17,15 @@ import (
 )
 
 var ctx = context.Background()
+
+func isValidPNG(data []byte) bool {
+	// Создаем io.Reader из []byte
+	reader := bytes.NewReader(data)
+
+	// Пытаемся декодировать PNG
+	_, err := png.Decode(reader)
+	return err == nil
+}
 
 func main() {
 	rdb := redis.NewClient(&redis.Options{
@@ -70,14 +81,19 @@ func main() {
 			w.Write([]byte(err.Error()))
 		}
 
-		pipeline := rdb.Pipeline()
-		pipeline.Set(ctx, tileName, resp.Body(), 0)
+		if tile := resp.Body(); isValidPNG(tile) {
+			pipeline := rdb.Pipeline()
+			pipeline.Set(ctx, tileName, tile, 0)
 
-		if _, err := pipeline.Exec(ctx); err != nil {
-			log.Printf("Ошибка pipeline: %v", err)
+			if _, err := pipeline.Exec(ctx); err != nil {
+				log.Printf("Ошибка pipeline: %v", err)
+			}
+
+			w.Write([]byte(tile))
+		} else {
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte("Not valid PNG tile"))
 		}
-
-		w.Write([]byte(resp.Body()))
 	})
 
 	log.Print("Serve on :8080")

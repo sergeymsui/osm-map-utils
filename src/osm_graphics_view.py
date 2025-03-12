@@ -1,19 +1,21 @@
 import re
-import random as rnd
 
 from functools import partial
-import math
-from PySide6.QtCore import QUrl, QVariantAnimation
-from PySide6.QtGui import QPainter, QPixmap
+from PySide6.QtCore import QUrl, Signal
+from PySide6.QtGui import QPixmap, QPainter
+from PySide6.QtNetwork import QNetworkRequest, QNetworkReply
 from PySide6.QtWidgets import (
     QGraphicsView,
     QGraphicsScene,
     QGraphicsPixmapItem,
+    QPushButton,
+    QListWidget
 )
-from PySide6.QtNetwork import (
-    QNetworkRequest,
-    QNetworkReply,
-)
+
+import math
+from queue import PriorityQueue
+import requests
+
 from network_access_manager_pool import NetworkAccessManagerPool
 
 
@@ -32,17 +34,152 @@ def check_and_extract_numbers(filename):
         # If it doesn't match, return False and an empty list.
         return False, list()
 
+def get_coordinates_from_location(location_name):
+    # Базовый URL API Nominatim
+    base_url = "https://nominatim.openstreetmap.org/search"
 
-from functools import partial
-from PySide6.QtCore import QUrl, QPropertyAnimation, QParallelAnimationGroup, QRectF
-from PySide6.QtGui import QPixmap, QPainter
-from PySide6.QtNetwork import QNetworkRequest, QNetworkReply
-from PySide6.QtWidgets import (
-    QGraphicsView,
-    QGraphicsScene,
-    QGraphicsPixmapItem,
-    QGraphicsOpacityEffect,
-)
+    # Параметры запроса
+    params = {
+        "q": location_name,  # Название места или адрес
+        "format": "json",     # Формат ответа (JSON)
+        "limit": 10            # Ограничение на количество результатов
+    }
+
+    # Заголовки для имитации браузера (требуется Nominatim)
+    headers = {
+        "User-Agent": "MyGeocodingApp/1.0"  # Укажите свое приложение/версию
+    }
+
+    # Выполняем GET-запрос
+    response = requests.get(base_url, params=params, headers=headers)
+
+    # Проверяем статус ответа
+    if response.status_code == 200:
+        data = response.json()
+
+        if data:
+            return data
+        else:
+            raise ValueError("Местоположение не найдено.")
+    else:
+        raise Exception(f"Ошибка запроса: {response.status_code}")
+
+
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QLineEdit, QCompleter
+from PySide6.QtCore import QStringListModel
+
+class MyLineEdit(QLineEdit):
+    onFucus = Signal()
+    outFucus = Signal()
+
+    def focusInEvent(self, event):
+        super().focusInEvent(event)
+        self.onFucus.emit()
+
+    def focusOutEvent(self, event):
+        super().focusOutEvent(event)
+        self.outFucus.emit()
+
+class MyListWidget(QListWidget):
+    outFucus = Signal()
+
+    def focusOutEvent(self, event):
+        super().focusOutEvent(event)
+        self.outFucus.emit()
+
+class SearchWidget(QWidget):
+    changedLocation = Signal(float, float, float, float)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+        self.setFixedWidth(350)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(0)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        # Поле ввода
+        self.search_box = MyLineEdit(self)
+        self.search_box.textChanged.connect(self.changeEditText)
+        self.search_box.setFixedSize(350, 30)
+        self.search_box.setPlaceholderText("Введите запрос...")
+
+        layout.addWidget(self.search_box)
+        self.setLayout(layout)
+
+        # Хранение координат
+        self.location_dict = {}
+        self.suggestions = []
+
+        self.suggestList = MyListWidget(self.parent())
+        self.suggestList.setFixedWidth(350)
+        self.suggestList.move(20, 30 + 20)
+        self.suggestList.hide()
+        self.suggestList.itemClicked.connect(self.onSelection)
+
+        self.search_box.onFucus.connect(self.onActive)
+        self.suggestList.outFucus.connect(self.onDeactive)
+        self.search_box.outFucus.connect(self.onDeactive)
+
+    def onActive(self):
+        if len(self.suggestions):
+            self.suggestList.setVisible(True)
+
+    def onDeactive(self):
+        if not self.suggestList.hasFocus():
+            self.suggestList.setVisible(False)
+
+
+    def changeEditText(self, text):
+
+        if len(text) <= 3:
+            self.suggestList.hide()
+            return
+        self.suggestList.setVisible(True)
+
+        self.location_dict.clear()  # Очищаем старые данные
+
+        ranked_place = list()
+        mrequest = get_coordinates_from_location(text)
+        for place in mrequest:
+            place_rank = int(place["place_rank"])
+            display_name = place["display_name"]
+
+            print(place)
+
+            self.location_dict[display_name] = place["boundingbox"]
+            ranked_place.append((place_rank, display_name))
+
+        ranked_place.sort(reverse=False)
+        self.suggestions = [place for _, place in ranked_place]
+
+        self.setSuggestions(self.suggestions)
+
+    def setSuggestions(self, suggestions):
+        """Обновляет список предложений в Completer"""
+
+        self.suggestList.clear()
+        self.suggestList.addItems(self.suggestions)
+
+
+
+    def onSelection(self, item):
+        """Обрабатывает выбор элемента и выводит координаты"""
+
+        text = item.text()
+
+        boundingbox = self.location_dict.get(text, None)
+        if boundingbox:
+            print(f"Выбрано: {text}, Координаты: {boundingbox}")
+            if len(boundingbox) != 4:
+                print("Ошибка: boundingbox должен содержать 4 координаты (south, north, west, east)")
+                return
+
+            # Преобразуем строки в числа
+            south, north, west, east = map(float, boundingbox)
+            self.changedLocation.emit(south, north, west, east)
+            self.suggestList.hide()
 
 
 class OSMGraphicsView(QGraphicsView):
@@ -68,10 +205,111 @@ class OSMGraphicsView(QGraphicsView):
         self.updateSceneRect()
 
         # Предполагается, что NetworkAccessManagerPool определён
-        self.network_manager_pool = NetworkAccessManagerPool(self, 10)
+        self.network_manager_pool = NetworkAccessManagerPool(self, 100)
 
         # Начальная загрузка тайлов
         self.updateTiles()
+
+        self.h_margin = 20
+        self.w_margin = 20
+
+        self.findLine = SearchWidget(self)
+        self.findLine.move(self.w_margin, self.h_margin)
+        self.findLine.changedLocation.connect(self.fitToBoundingBox)
+
+        self.plusButton = QPushButton("+", self)
+        self.plusButton.setFixedSize(30, 30)
+        self.plusButton.move(self.width() - self.w_margin, self.h_margin)
+        self.plusButton.clicked.connect(self.upZoomEvent)
+
+        self.minusButton = QPushButton("-", self)
+        self.minusButton.setFixedSize(30, 30)
+        self.minusButton.move(self.width() - self.w_margin, self.h_margin)
+        self.minusButton.clicked.connect(self.downZoomEvent)
+
+    def fitToBoundingBox(self, south, north, west, east):
+        """
+        Подгоняет область видимости карты так, чтобы она охватывала `boundingbox`.
+
+        boundingbox = [south, north, west, east] (широта и долгота в градусах).
+        """
+
+        print(south, north, west, east)
+
+        # Проверяем, что координаты корректны
+        if south >= north or west >= east:
+            print("Ошибка: некорректные границы boundingbox")
+            return
+
+        # Найдем центр boundingbox
+        center_lat = (south + north) / 2.0
+        center_lon = (west + east) / 2.0
+
+        # Найдем уровень зума, который поместит всю область в экран
+        self.zoom = self.calculateBestZoom(south, north, west, east)
+        self.updateSceneRect()
+
+        # Переведем центр в пиксельные координаты
+        x_tile, y_tile = self.latLonToTile(center_lat, center_lon, self.zoom)
+        x_pix = x_tile * self.tile_size
+        y_pix = y_tile * self.tile_size
+
+        # Устанавливаем новый центр карты
+        self.centerOn(x_pix, y_pix)
+        self.updateTiles()
+
+        print(f"Карта сдвинута к BBOX: lat={center_lat}, lon={center_lon}, zoom={self.zoom}")
+
+    def calculateBestZoom(self, south, north, west, east):
+        """
+        Вычисляет оптимальный уровень зума, чтобы boundingbox полностью влез в окно.
+        """
+        for z in range(19, 0, -1):  # Перебираем зум от 19 до 0
+            x_min, y_max = self.latLonToTile(north, west, z)
+            x_max, y_min = self.latLonToTile(south, east, z)
+
+            # Размер boundingbox в пикселях
+            width_px = (x_max - x_min) * self.tile_size
+            height_px = (y_max - y_min) * self.tile_size
+
+            # Проверяем, влезает ли он в окно
+            if width_px <= self.viewport().width() and height_px <= self.viewport().height():
+                return z  # Возвращаем первый подходящий зум
+
+        return None  # Если ничего не нашли, оставляем текущий
+
+    def latLonToTile(self, lat, lon, zoom):
+        """
+        Конвертирует широту и долготу в тайловые координаты (x, y) для заданного зума.
+        """
+        n = 2 ** zoom
+        x_tile = (lon + 180.0) / 360.0 * n
+        y_tile = (1.0 - math.log(math.tan(math.radians(lat)) + 1 / math.cos(math.radians(lat))) / math.pi) / 2.0 * n
+        return x_tile, y_tile
+
+    def moveToCoordinates(self, lat, lon):
+        """
+        Перемещает вид карты в указанные координаты (lat, lon).
+        """
+        # Проверяем, что зум установлен корректно
+        if not (0 <= self.zoom <= 19):
+            print("Ошибка: Некорректный уровень зума")
+            return
+
+        # Переводим широту и долготу в тайловые координаты
+        n = 2 ** self.zoom  # Количество тайлов в ряду на данном уровне зума
+        x_tile = (lon + 180.0) / 360.0 * n
+        y_tile = (1.0 - math.log(math.tan(math.radians(lat)) + 1 / math.cos(math.radians(lat))) / math.pi) / 2.0 * n
+
+        # Переводим тайловые координаты в пиксельные
+        x_pix = x_tile * self.tile_size
+        y_pix = y_tile * self.tile_size
+
+        # Перемещаем центр карты на вычисленные координаты
+        self.centerOn(x_pix, y_pix)
+        self.updateTiles()
+
+        print(f"Перемещено в координаты: lat={lat}, lon={lon}, x={x_pix}, y={y_pix}")
 
     def updateSceneRect(self):
         """
@@ -81,7 +319,7 @@ class OSMGraphicsView(QGraphicsView):
         """
 
         world_width = self.tile_size * (2**self.zoom)
-        self.scene.setSceneRect(0, 0, world_width, world_width)
+        self.scene.setSceneRect(0,0, world_width + 0.1*world_width, world_width)
 
     def updateTiles(self):
         """
@@ -104,13 +342,31 @@ class OSMGraphicsView(QGraphicsView):
                     continue  # Вертикальное оборачивание не требуется
                 key = (self.zoom, wrapped_x, y, world_offset)
                 if key not in self.tiles:
+                    self.preLoadTile(wrapped_x, y, self.zoom, world_offset)
                     self.loadTile(wrapped_x, y, self.zoom, world_offset)
+
+    def preLoadTile(self, x, y, z, world_offset):
+        pixmap = QPixmap()
+        pixmap.load("../data/preview.png")
+        if pixmap.isNull():
+            print(f"Не могу превью для ({z}/{x}/{y})")
+            return
+
+        item = QGraphicsPixmapItem(pixmap)
+        # Позиционирование с учетом горизонтального оборачивания:
+        # (x + world_offset) учитывает повторения карты слева и справа.
+        item.setPos((x + world_offset) * self.tile_size, y * self.tile_size)
+        item.setZValue(1)
+        self.scene.addItem(item)
+        self.tiles[(z, x, y, world_offset)] = item
 
     def loadTile(self, x, y, z, world_offset=0):
         """
         Формирование URL и запуск асинхронной загрузки тайла с учётом смещения.
         """
+
         url = f"http://localhost:8080/{z}/{x}/{y}.png"
+
         request = QNetworkRequest(QUrl(url))
         reply = self.network_manager_pool.getNetworkManager().get(request)
         reply.finished.connect(
@@ -159,6 +415,14 @@ class OSMGraphicsView(QGraphicsView):
           - Вычисляется новый уровень зума, обновляются размеры сцены и центр.
           - После загрузки новых тайлов для нового зума, старые плавно исчезают.
         """
+
+        visibleRect = self.mapToScene(self.viewport().rect()).boundingRect()
+        sceneRect = self.scene.sceneRect()
+
+        if visibleRect.width() >= sceneRect.width():
+            self.scene.clear()
+            self.scene.setSceneRect(visibleRect)
+
         delta = event.angleDelta().y()
         old_zoom = self.zoom
         if delta > 0:
@@ -182,22 +446,7 @@ class OSMGraphicsView(QGraphicsView):
         self.centerOn(new_center)
         self.updateTiles()
 
-        # Анимация fade-out для старых тайлов
-        anim_group = QParallelAnimationGroup(self)
-        for item in old_items:
-            effect = QGraphicsOpacityEffect()
-            item.setGraphicsEffect(effect)
-            anim = QPropertyAnimation(effect, b"opacity")
-            anim.setDuration(300)
-            anim.setStartValue(1.0)
-            anim.setEndValue(0.0)
-            anim_group.addAnimation(anim)
-        # По окончании группы анимаций удаляем старые тайлы
-        anim_group.finished.connect(lambda: self.cleanupOldTiles(old_items))
-        anim_group.start()
-        self._fade_anim_group = (
-            anim_group  # Сохраняем ссылку, чтобы группа не была уничтожена
-        )
+        print(f"ZOOM: {self.zoom}")
 
     def cleanupOldTiles(self, items):
         for item in items:
@@ -205,6 +454,64 @@ class OSMGraphicsView(QGraphicsView):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+
+        self.plusButton.move(self.width() - self.w_margin - self.plusButton.width(), self.h_margin)
+        self.minusButton.move(self.width() -  self.w_margin - self.plusButton.width(), 2.5 * self.h_margin)
+        self.updateTiles()
+
+    def upZoomEvent(self):
+
+        new_zoom = self.zoom + 1
+        old_zoom = self.zoom
+
+        if new_zoom > 19 or new_zoom < 0:
+            return
+
+        visibleRect = self.mapToScene(self.viewport().rect()).boundingRect()
+        sceneRect = self.scene.sceneRect()
+
+        if visibleRect.width() >= sceneRect.width():
+            self.scene.clear()
+            self.scene.setSceneRect(visibleRect)
+
+        self.tiles.clear()
+
+        # Вычисляем новую позицию центра
+        cursor_scene_pos = visibleRect.center().toPoint()
+        factor = pow(2, new_zoom - old_zoom)
+        new_center = cursor_scene_pos * factor
+
+        self.zoom  = new_zoom
+        self.updateSceneRect()
+        self.centerOn(new_center)
+        self.updateTiles()
+
+
+    def downZoomEvent(self):
+
+        new_zoom = self.zoom - 1
+        old_zoom = self.zoom
+
+        if new_zoom > 19 or new_zoom < 0:
+            return
+
+        visibleRect = self.mapToScene(self.viewport().rect()).boundingRect()
+        sceneRect = self.scene.sceneRect()
+
+        if visibleRect.width() >= sceneRect.width():
+            self.scene.clear()
+            self.scene.setSceneRect(visibleRect)
+
+        self.tiles.clear()
+
+        # Вычисляем новую позицию центра
+        cursor_scene_pos = visibleRect.center().toPoint()
+        factor = pow(2, new_zoom - old_zoom)
+        new_center = cursor_scene_pos * factor
+
+        self.zoom = new_zoom
+        self.updateSceneRect()
+        self.centerOn(new_center)
         self.updateTiles()
 
     def isNearMapBoundary(self, margin=50):
@@ -222,15 +529,6 @@ class OSMGraphicsView(QGraphicsView):
 
     def mouseMoveEvent(self, event):
         super().mouseMoveEvent(event)
-
-        nearLeft, nearRight, nearTop, nearBottom = self.isNearMapBoundary()
-
-        world_width = self.tile_size * (2**self.zoom)
-        # self.scene.setSceneRect(0, 0, world_width, world_width)
-
-        # sceneRect = self.scene.sceneRect()
-        # sceneRect.width()
-
         self.updateTiles()
 
     def mouseReleaseEvent(self, event):
