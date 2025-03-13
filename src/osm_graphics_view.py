@@ -1,7 +1,10 @@
 import re
+import math
+
+from searchwidget import SearchWidget
 
 from functools import partial
-from PySide6.QtCore import QUrl, Signal
+from PySide6.QtCore import QUrl
 from PySide6.QtGui import QPixmap, QPainter
 from PySide6.QtNetwork import QNetworkRequest, QNetworkReply
 from PySide6.QtWidgets import (
@@ -9,12 +12,7 @@ from PySide6.QtWidgets import (
     QGraphicsScene,
     QGraphicsPixmapItem,
     QPushButton,
-    QListWidget
 )
-
-import math
-from queue import PriorityQueue
-import requests
 
 from network_access_manager_pool import NetworkAccessManagerPool
 
@@ -33,153 +31,6 @@ def check_and_extract_numbers(filename):
     else:
         # If it doesn't match, return False and an empty list.
         return False, list()
-
-def get_coordinates_from_location(location_name):
-    # Базовый URL API Nominatim
-    base_url = "https://nominatim.openstreetmap.org/search"
-
-    # Параметры запроса
-    params = {
-        "q": location_name,  # Название места или адрес
-        "format": "json",     # Формат ответа (JSON)
-        "limit": 10            # Ограничение на количество результатов
-    }
-
-    # Заголовки для имитации браузера (требуется Nominatim)
-    headers = {
-        "User-Agent": "MyGeocodingApp/1.0"  # Укажите свое приложение/версию
-    }
-
-    # Выполняем GET-запрос
-    response = requests.get(base_url, params=params, headers=headers)
-
-    # Проверяем статус ответа
-    if response.status_code == 200:
-        data = response.json()
-
-        if data:
-            return data
-        else:
-            raise ValueError("Местоположение не найдено.")
-    else:
-        raise Exception(f"Ошибка запроса: {response.status_code}")
-
-
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QLineEdit, QCompleter
-from PySide6.QtCore import QStringListModel
-
-class MyLineEdit(QLineEdit):
-    onFucus = Signal()
-    outFucus = Signal()
-
-    def focusInEvent(self, event):
-        super().focusInEvent(event)
-        self.onFucus.emit()
-
-    def focusOutEvent(self, event):
-        super().focusOutEvent(event)
-        self.outFucus.emit()
-
-class MyListWidget(QListWidget):
-    outFucus = Signal()
-
-    def focusOutEvent(self, event):
-        super().focusOutEvent(event)
-        self.outFucus.emit()
-
-class SearchWidget(QWidget):
-    changedLocation = Signal(float, float, float, float)
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-
-        self.setFixedWidth(350)
-
-        layout = QVBoxLayout(self)
-        layout.setSpacing(0)
-        layout.setContentsMargins(0, 0, 0, 0)
-
-        # Поле ввода
-        self.search_box = MyLineEdit(self)
-        self.search_box.textChanged.connect(self.changeEditText)
-        self.search_box.setFixedSize(350, 30)
-        self.search_box.setPlaceholderText("Введите запрос...")
-
-        layout.addWidget(self.search_box)
-        self.setLayout(layout)
-
-        # Хранение координат
-        self.location_dict = {}
-        self.suggestions = []
-
-        self.suggestList = MyListWidget(self.parent())
-        self.suggestList.setFixedWidth(350)
-        self.suggestList.move(20, 30 + 20)
-        self.suggestList.hide()
-        self.suggestList.itemClicked.connect(self.onSelection)
-
-        self.search_box.onFucus.connect(self.onActive)
-        self.suggestList.outFucus.connect(self.onDeactive)
-        self.search_box.outFucus.connect(self.onDeactive)
-
-    def onActive(self):
-        if len(self.suggestions):
-            self.suggestList.setVisible(True)
-
-    def onDeactive(self):
-        if not self.suggestList.hasFocus():
-            self.suggestList.setVisible(False)
-
-
-    def changeEditText(self, text):
-
-        if len(text) <= 3:
-            self.suggestList.hide()
-            return
-        self.suggestList.setVisible(True)
-
-        self.location_dict.clear()  # Очищаем старые данные
-
-        ranked_place = list()
-        mrequest = get_coordinates_from_location(text)
-        for place in mrequest:
-            place_rank = int(place["place_rank"])
-            display_name = place["display_name"]
-
-            print(place)
-
-            self.location_dict[display_name] = place["boundingbox"]
-            ranked_place.append((place_rank, display_name))
-
-        ranked_place.sort(reverse=False)
-        self.suggestions = [place for _, place in ranked_place]
-
-        self.setSuggestions(self.suggestions)
-
-    def setSuggestions(self, suggestions):
-        """Обновляет список предложений в Completer"""
-
-        self.suggestList.clear()
-        self.suggestList.addItems(self.suggestions)
-
-
-
-    def onSelection(self, item):
-        """Обрабатывает выбор элемента и выводит координаты"""
-
-        text = item.text()
-
-        boundingbox = self.location_dict.get(text, None)
-        if boundingbox:
-            print(f"Выбрано: {text}, Координаты: {boundingbox}")
-            if len(boundingbox) != 4:
-                print("Ошибка: boundingbox должен содержать 4 координаты (south, north, west, east)")
-                return
-
-            # Преобразуем строки в числа
-            south, north, west, east = map(float, boundingbox)
-            self.changedLocation.emit(south, north, west, east)
-            self.suggestList.hide()
 
 
 class OSMGraphicsView(QGraphicsView):
@@ -258,7 +109,9 @@ class OSMGraphicsView(QGraphicsView):
         self.centerOn(x_pix, y_pix)
         self.updateTiles()
 
-        print(f"Карта сдвинута к BBOX: lat={center_lat}, lon={center_lon}, zoom={self.zoom}")
+        print(
+            f"Карта сдвинута к BBOX: lat={center_lat}, lon={center_lon}, zoom={self.zoom}"
+        )
 
     def calculateBestZoom(self, south, north, west, east):
         """
@@ -273,7 +126,10 @@ class OSMGraphicsView(QGraphicsView):
             height_px = (y_max - y_min) * self.tile_size
 
             # Проверяем, влезает ли он в окно
-            if width_px <= self.viewport().width() and height_px <= self.viewport().height():
+            if (
+                width_px <= self.viewport().width()
+                and height_px <= self.viewport().height()
+            ):
                 return z  # Возвращаем первый подходящий зум
 
         return None  # Если ничего не нашли, оставляем текущий
@@ -282,9 +138,19 @@ class OSMGraphicsView(QGraphicsView):
         """
         Конвертирует широту и долготу в тайловые координаты (x, y) для заданного зума.
         """
-        n = 2 ** zoom
+        n = 2**zoom
         x_tile = (lon + 180.0) / 360.0 * n
-        y_tile = (1.0 - math.log(math.tan(math.radians(lat)) + 1 / math.cos(math.radians(lat))) / math.pi) / 2.0 * n
+        y_tile = (
+            (
+                1.0
+                - math.log(
+                    math.tan(math.radians(lat)) + 1 / math.cos(math.radians(lat))
+                )
+                / math.pi
+            )
+            / 2.0
+            * n
+        )
         return x_tile, y_tile
 
     def moveToCoordinates(self, lat, lon):
@@ -297,9 +163,19 @@ class OSMGraphicsView(QGraphicsView):
             return
 
         # Переводим широту и долготу в тайловые координаты
-        n = 2 ** self.zoom  # Количество тайлов в ряду на данном уровне зума
+        n = 2**self.zoom  # Количество тайлов в ряду на данном уровне зума
         x_tile = (lon + 180.0) / 360.0 * n
-        y_tile = (1.0 - math.log(math.tan(math.radians(lat)) + 1 / math.cos(math.radians(lat))) / math.pi) / 2.0 * n
+        y_tile = (
+            (
+                1.0
+                - math.log(
+                    math.tan(math.radians(lat)) + 1 / math.cos(math.radians(lat))
+                )
+                / math.pi
+            )
+            / 2.0
+            * n
+        )
 
         # Переводим тайловые координаты в пиксельные
         x_pix = x_tile * self.tile_size
@@ -319,7 +195,7 @@ class OSMGraphicsView(QGraphicsView):
         """
 
         world_width = self.tile_size * (2**self.zoom)
-        self.scene.setSceneRect(0,0, world_width + 0.1*world_width, world_width)
+        self.scene.setSceneRect(0, 0, world_width + 0.1 * world_width, world_width)
 
     def updateTiles(self):
         """
@@ -455,8 +331,12 @@ class OSMGraphicsView(QGraphicsView):
     def resizeEvent(self, event):
         super().resizeEvent(event)
 
-        self.plusButton.move(self.width() - self.w_margin - self.plusButton.width(), self.h_margin)
-        self.minusButton.move(self.width() -  self.w_margin - self.plusButton.width(), 2.5 * self.h_margin)
+        self.plusButton.move(
+            self.width() - self.w_margin - self.plusButton.width(), self.h_margin
+        )
+        self.minusButton.move(
+            self.width() - self.w_margin - self.plusButton.width(), 2.5 * self.h_margin
+        )
         self.updateTiles()
 
     def upZoomEvent(self):
@@ -481,11 +361,10 @@ class OSMGraphicsView(QGraphicsView):
         factor = pow(2, new_zoom - old_zoom)
         new_center = cursor_scene_pos * factor
 
-        self.zoom  = new_zoom
+        self.zoom = new_zoom
         self.updateSceneRect()
         self.centerOn(new_center)
         self.updateTiles()
-
 
     def downZoomEvent(self):
 
