@@ -1,28 +1,30 @@
-
 import re
 import sys
 import redis
 import random as rnd
 
-from PIL.ImageQt import QIODevice
 from PySide6.QtWidgets import QApplication
-from functools import partial, cache
+from functools import partial
 from math import pow
-from PySide6.QtCore import Qt, QUrl, QVariantAnimation
+from PySide6.QtCore import QUrl, QVariantAnimation
 from PySide6.QtGui import QPainter, QPixmap
 from PySide6.QtWidgets import (
     QGraphicsView,
     QGraphicsScene,
     QGraphicsPixmapItem,
-    QGraphicsItemGroup,
 )
-from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QAbstractSocket, QNetworkReply
+from PySide6.QtNetwork import (
+    QNetworkAccessManager,
+    QNetworkRequest,
+    QNetworkReply,
+)
 
-redis_connection = redis.Redis(host='192.168.141.133', port=6379, db=0)
+redis_connection = redis.Redis(host="localhost", port=6379, db=0)
+
 
 def check_and_extract_numbers(filename):
     # Template for file name validation
-    pattern = r'^(\d+)_(\d+)_(\d+)\_tile$'
+    pattern = r"^(\d+)_(\d+)_(\d+)\_tile$"
 
     # Checking if the file name matches the pattern
     match = re.match(pattern, filename)
@@ -35,9 +37,10 @@ def check_and_extract_numbers(filename):
         # If it doesn't match, return False and an empty list.
         return False, []
 
+
 class NetworkAccessManagerPool:
 
-    def __init__(self, parent, manager_count = 1):
+    def __init__(self, parent, manager_count=1):
         self.parent = parent
         self.manager_count = manager_count
         self.network_manager_list = list()
@@ -54,6 +57,18 @@ class NetworkAccessManagerPool:
 class OSMGraphicsView(QGraphicsView):
     def __init__(self, zoom=2, parent=None):
         super().__init__(parent)
+
+        self.setRenderHint(QPainter.Antialiasing)
+        self.setRenderHint(QPainter.SmoothPixmapTransform)
+        self.setDragMode(QGraphicsView.ScrollHandDrag)
+        self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+        self.setResizeAnchor(QGraphicsView.AnchorUnderMouse)
+        self.setViewportUpdateMode(QGraphicsView.FullViewportUpdate)
+        self.setOptimizationFlag(QGraphicsView.DontAdjustForAntialiasing, True)
+        self.setOptimizationFlag(QGraphicsView.DontSavePainterState, True)
+        self.setViewportUpdateMode(QGraphicsView.SmartViewportUpdate)
+        self.setCacheMode(QGraphicsView.CacheBackground)
+
         self.tile_size = 256  # The size of one tile in pixels
         self.zoom = zoom  # Current zoom level
         self.tiles = {}  # Loaded tiles: key (zoom, x, y)
@@ -131,13 +146,15 @@ class OSMGraphicsView(QGraphicsView):
             self.tiles[(z, x, y)] = item
             return
 
-        url = rnd.choice([
-            f"https://tile.openstreetmap.org/{z}/{x}/{y}.png",
-            f"https://a.tile.openstreetmap.org/{z}/{x}/{y}.png",
-            f"https://b.tile.openstreetmap.org/{z}/{x}/{y}.png",
-            f"https://c.tile.openstreetmap.org/{z}/{x}/{y}.png",
-            f"https://tile.openstreetmap.de/{z}/{x}/{y}.png"
-        ])
+        url = rnd.choice(
+            [
+                # f"https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+                f"https://a.tile.openstreetmap.org/{z}/{x}/{y}.png",
+                f"https://b.tile.openstreetmap.org/{z}/{x}/{y}.png",
+                f"https://c.tile.openstreetmap.org/{z}/{x}/{y}.png",
+                # f"https://tile.openstreetmap.de/{z}/{x}/{y}.png",
+            ]
+        )
 
         request = QNetworkRequest(QUrl(url))
         # Set the correct User-Agent according to OSM policy
@@ -173,7 +190,6 @@ class OSMGraphicsView(QGraphicsView):
 
         tile_name = f"{x}_{y}_{z}_tile"
         redis_connection.set(tile_name, bytes(data))
-
 
     def clearOldTilesGroup(self):
         """Removes an animated group of old tiles after the animation is complete"""
