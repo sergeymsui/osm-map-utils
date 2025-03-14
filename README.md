@@ -35,9 +35,6 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 
 4. Install Go dependencies:
     ```sh
-    cd example/load_cache
-    go mod tidy
-    cd ../../../src/osm_tile_server
     go mod tidy
     ```
 
@@ -52,7 +49,7 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 
 2. Run the OSM Tile Server:
     ```sh
-    cd src/osm_tile_server
+    cd cmd/server
     go run main.go
     ```
 
@@ -68,7 +65,7 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 
 1. Run the OSM Map Viewer:
     ```sh
-    cd src
+    cd py-src
     python main.py
     ```
 
@@ -80,12 +77,12 @@ The tile loader is implemented in Go and is located in `example/load_cache/main.
 
 ### OSM Tile Server
 
-The OSM Tile Server is implemented in Go and is located in `src/osm_tile_server/main.go`. It serves OSM tiles from Redis or fetches them from the OSM servers if they are not cached.
+The OSM Tile Server is implemented in Go and is located in `cmd/server/main.go`. It serves OSM tiles from Redis or fetches them from the OSM servers if they are not cached.
 
 ### OSM Map Viewer
 
-The OSM Map Viewer is implemented in Python using PySide6 and is located in `src/osm_graphics_view.py` and `src/mainwindow.py`. It provides a graphical interface for viewing and interacting with OSM maps.
+The OSM Map Viewer is implemented in Python using PySide6 and is located in `py-src/osm_graphics_view.py` and `py-src/mainwindow.py`. It provides a graphical interface for viewing and interacting with OSM maps.
 
 ### Search Widget
 
-The search widget is implemented in Python and is located in `src/searchwidget.py`. It allows users to search for locations using the Nominatim API and displays suggestions in a list.
+The search widget is implemented in Python and is located in `py-src/searchwidget.py`. It allows users to search for locations using the Nominatim API and displays suggestions in a list.
